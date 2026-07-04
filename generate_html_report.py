@@ -1,519 +1,487 @@
 # -*- coding: utf-8 -*-
 """
-量化交易工作坊 TASK1 - HTML 看板生成脚本
-生成交互式 HTML 量化分析报告，可直接部署至 GitHub Pages
-
-包含：
-  - 交互式 K线图（Candlestick Chart）含缩放/平移
-  - 每日收盘价走势图（含移动均线）
-  - 成交量柱状图
-  - 数据摘要统计卡片
-  - 交易数据表格预览
+TASK1 HTML看板生成脚本 v2 — 生成完整增强版 ECharts 交互式报告
 """
-
 import pandas as pd
 import json
 import os
-from datetime import datetime
+import numpy as np
 
-# ============================================================
-# 配置
-# ============================================================
 OUTPUT_DIR = os.path.dirname(os.path.abspath(__file__))
 CSV_FILE = os.path.join(OUTPUT_DIR, "002747_daily.csv")
 HTML_FILE = os.path.join(OUTPUT_DIR, "index.html")
 STOCK_CODE = "002747"
 STOCK_NAME = "埃斯顿"
-AUTHOR_NAME = "李菓"
+AUTHOR = "李菓"
+
+# 读取已有的模板 HTML（包含完整结构）
+TEMPLATE_PATH = os.path.join(OUTPUT_DIR, "template.html")
 
 
-def load_data(csv_path):
-    """加载 CSV 数据"""
+def load_data():
     col_map = {
-        "交易日期": "date",
-        "开盘价": "open",
-        "最高价": "high",
-        "最低价": "low",
-        "收盘价": "close",
-        "前收盘价": "pre_close",
-        "涨跌额": "change",
-        "涨跌幅(%)": "pct_chg",
-        "成交量(手)": "volume",
-        "成交额(元)": "amount",
+        "交易日期": "date", "开盘价": "open", "最高价": "high",
+        "最低价": "low", "收盘价": "close", "成交量(手)": "volume",
+        "成交额(元)": "amount", "涨跌幅(%)": "pct_chg",
+        "换手率(%)": "turnover_rate",
+        "MA5": "ma5", "MA10": "ma10", "MA20": "ma20",
+        "MA60": "ma60", "MA120": "ma120", "MA250": "ma250",
+        "MACD_DIF": "macd_dif", "MACD_DEA": "macd_dea", "MACD柱": "macd_bar",
+        "RSI6": "rsi6", "RSI12": "rsi12", "RSI24": "rsi24",
+        "KDJ_K": "kdj_k", "KDJ_D": "kdj_d", "KDJ_J": "kdj_j",
+        "BOLL中轨": "boll_mid", "BOLL上轨": "boll_up", "BOLL下轨": "boll_dn",
+        "60日波动率": "volatility_60",
     }
-    df = pd.read_csv(csv_path, encoding="utf-8-sig")
+    df = pd.read_csv(CSV_FILE, encoding="utf-8-sig")
     df = df.rename(columns=col_map)
     df["date"] = pd.to_datetime(df["date"], format="%Y%m%d")
     df = df.sort_values("date").reset_index(drop=True)
-
-    # 计算移动均线
-    df["ma5"] = df["close"].rolling(5).mean()
-    df["ma10"] = df["close"].rolling(10).mean()
-    df["ma20"] = df["close"].rolling(20).mean()
-    df["ma60"] = df["close"].rolling(60).mean()
-
     return df
 
 
-def prepare_candlestick_data(df):
-    """准备K线图数据（OHLC 格式）"""
-    records = []
-    for _, row in df.iterrows():
-        records.append({
-            "x": row["date"].strftime("%Y-%m-%d"),
-            "open": round(float(row["open"]), 2),
-            "high": round(float(row["high"]), 2),
-            "low": round(float(row["low"]), 2),
-            "close": round(float(row["close"]), 2),
-        })
-    return json.dumps(records, ensure_ascii=False)
+def build_data_js(df):
+    """构建 data.js 文件内容"""
+    cols_needed = [
+        "open", "high", "low", "close", "volume",
+        "ma5", "ma10", "ma20", "ma60", "ma120", "ma250",
+        "macd_dif", "macd_dea", "macd_bar",
+        "rsi6", "rsi12", "rsi24",
+        "kdj_k", "kdj_d", "kdj_j",
+        "boll_mid", "boll_up", "boll_dn",
+    ]
+    # 日期
+    dates = df["date"].dt.strftime("%Y-%m-%d").tolist()
+
+    data_obj = {"dates": dates}
+    for col in cols_needed:
+        if col in df.columns:
+            series = df[col].dropna()
+            # 对齐到完整日期索引
+            vals = []
+            j = 0
+            for i in range(len(df)):
+                if pd.isna(df.iloc[i][col]) and col != "volume":
+                    vals.append(None)
+                else:
+                    vals.append(round(float(df.iloc[i][col]), 4))
+            data_obj[col] = vals
+
+    # OHLC 数组
+    ohlc = []
+    for i in range(len(df)):
+        ohlc.append([
+            round(float(df.iloc[i]["open"]), 2),
+            round(float(df.iloc[i]["close"]), 2),
+            round(float(df.iloc[i]["low"]), 2),
+            round(float(df.iloc[i]["high"]), 2),
+        ])
+    data_obj["ohlc"] = ohlc
+
+    return "var STOCK_DATA = " + json.dumps(data_obj, ensure_ascii=False) + ";"
 
 
-def prepare_line_data(df, col_name):
-    """准备折线图数据"""
-    series = df[col_name].dropna()
-    return json.dumps([
-        {"x": row["date"].strftime("%Y-%m-%d"), "y": round(float(row[col_name]), 2)}
-        for _, row in df.loc[series.index].iterrows()
-    ], ensure_ascii=False)
-
-
-def get_summary_stats(df):
-    """计算摘要统计"""
-    first_close = float(df.iloc[0]["close"])
-    last_close = float(df.iloc[-1]["close"])
-    change_pct = (last_close - first_close) / first_close * 100
+def get_stats(df):
+    first = float(df.iloc[0]["close"]); last = float(df.iloc[-1]["close"])
+    vol_last = df["volatility_60"].dropna()
     return {
+        "latest": f"{last:.2f}",
+        "change_pct": f"{(last - first) / first * 100:+.2f}",
+        "high": f"{df['high'].max():.2f}",
+        "low": f"{df['low'].min():.2f}",
+        "avg": f"{df['close'].mean():.2f}",
+        "avg_vol": f"{df['volume'].mean() / 10000:.2f}万",
+        "volatility": f"{vol_last.iloc[-1]:.2f}" if len(vol_last) > 0 else "—",
+        "trading_days": len(df),
         "start_date": df.iloc[0]["date"].strftime("%Y-%m-%d"),
         "end_date": df.iloc[-1]["date"].strftime("%Y-%m-%d"),
-        "trading_days": len(df),
-        "first_close": f"{first_close:.2f}",
-        "last_close": f"{last_close:.2f}",
-        "change_pct": f"{change_pct:+.2f}",
-        "high_max": f"{df['high'].max():.2f}",
-        "low_min": f"{df['low'].min():.2f}",
-        "avg_volume": f"{df['volume'].mean():.0f}",
-        "avg_amount": f"{df['amount'].mean():.0f}",
-        "volatility": f"{df['pct_chg'].std():.2f}",
     }
 
 
-def generate_html(df, stats):
-    """生成完整 HTML 页面"""
-    # 准备数据
-    candlestick_json = prepare_candlestick_data(df)
-    close_json = prepare_line_data(df, "close")
-    ma5_json = prepare_line_data(df, "ma5")
-    ma10_json = prepare_line_data(df, "ma10")
-    ma20_json = prepare_line_data(df, "ma20")
-    ma60_json = prepare_line_data(df, "ma60")
+def build_table_rows(df):
+    """最近30天表格"""
+    recent = df.tail(30).iloc[::-1]
+    rows = ""
+    for _, r in recent.iterrows():
+        chg = float(r["pct_chg"]) if not pd.isna(r["pct_chg"]) else 0
+        cls = "up" if chg > 0 else "down" if chg < 0 else ""
+        rows += f"""<tr>
+            <td>{r['date'].strftime('%Y-%m-%d')}</td>
+            <td>{r['open']:.2f}</td><td>{r['high']:.2f}</td>
+            <td>{r['low']:.2f}</td><td>{r['close']:.2f}</td>
+            <td class="{cls}">{chg:+.2f}%</td>
+            <td>{int(r['volume']):,}</td></tr>"""
+    return rows
 
-    # 成交量数据
-    volume_data = json.dumps([
-        {"x": row["date"].strftime("%Y-%m-%d"),
-         "y": int(row["volume"]),
-         "color": "#ef5350" if float(row["close"]) >= float(row["open"]) else "#26a69a"}
-        for _, row in df.iterrows()
-    ], ensure_ascii=False)
 
-    # 数据表格预览（最近20行）
-    table_data = []
-    for _, row in df.tail(20).iloc[::-1].iterrows():
-        table_data.append({
-            "date": row["date"].strftime("%Y-%m-%d"),
-            "open": f"{row['open']:.2f}",
-            "high": f"{row['high']:.2f}",
-            "low": f"{row['low']:.2f}",
-            "close": f"{row['close']:.2f}",
-            "change": f"{row['pct_chg']:+.2f}%",
-            "volume": f"{int(row['volume']):,}",
-        })
-    table_json = json.dumps(table_data, ensure_ascii=False)
-
-    html_content = f"""<!DOCTYPE html>
+def build_html(data_js, stats, table_rows):
+    """直接拼接完整 HTML"""
+    return f'''<!DOCTYPE html>
 <html lang="zh-CN">
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>{STOCK_NAME}({STOCK_CODE}) 量化分析看板</title>
-<script src="https://cdn.plot.ly/plotly-3.0.1.min.js"></script>
+<title>{STOCK_NAME}({STOCK_CODE}.SZ) 量化研究报告</title>
+<script src="https://cdn.jsdelivr.net/npm/echarts@5.4.3/dist/echarts.min.js"></script>
 <style>
-* {{ margin: 0; padding: 0; box-sizing: border-box; }}
-body {{
-    font-family: -apple-system, BlinkMacSystemFont, "Microsoft YaHei", "PingFang SC", sans-serif;
-    background: #0f1923;
-    color: #e0e0e0;
-    min-height: 100vh;
-}}
-.header {{
-    background: linear-gradient(135deg, #1a2a3a 0%, #0d1b2a 100%);
-    border-bottom: 2px solid #c9a84c;
-    padding: 30px 40px;
-    text-align: center;
-}}
-.header h1 {{
-    font-size: 1.8em;
-    color: #c9a84c;
-    margin-bottom: 8px;
-}}
-.header .subtitle {{
-    color: #8899aa;
-    font-size: 0.95em;
-}}
-.stats-row {{
-    display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
-    gap: 16px;
-    padding: 24px 40px;
-    background: #152230;
-    border-bottom: 1px solid #1e3040;
-}}
-.stat-card {{
-    background: #1a2f3f;
-    border: 1px solid #2a4050;
-    border-radius: 8px;
-    padding: 16px;
-    text-align: center;
-}}
-.stat-card .label {{ font-size: 0.8em; color: #7a8a9a; margin-bottom: 6px; }}
-.stat-card .value {{ font-size: 1.4em; font-weight: 700; }}
-.stat-card .value.up {{ color: #ef5350; }}
-.stat-card .value.down {{ color: #26a69a; }}
-.stat-card .value.neutral {{ color: #e0e0e0; }}
-.container {{ max-width: 1400px; margin: 0 auto; padding: 20px 40px; }}
-.chart-box {{
-    background: #152230;
-    border: 1px solid #1e3040;
-    border-radius: 10px;
-    padding: 20px;
-    margin-bottom: 24px;
-}}
-.chart-box h2 {{
-    font-size: 1.15em;
-    color: #c9a84c;
-    margin-bottom: 8px;
-    padding-bottom: 10px;
-    border-bottom: 1px solid #1e3040;
-}}
-.two-col {{
-    display: grid;
-    grid-template-columns: 1fr 1fr;
-    gap: 24px;
-    margin-bottom: 24px;
-}}
-@media (max-width: 900px) {{ .two-col {{ grid-template-columns: 1fr; }} }}
-.table-wrapper {{ overflow-x: auto; }}
-table {{
-    width: 100%;
-    border-collapse: collapse;
-    font-size: 0.85em;
-}}
-thead th {{
-    background: #1a2f3f;
-    color: #c9a84c;
-    padding: 10px 12px;
-    text-align: right;
-    border-bottom: 2px solid #2a4050;
-    position: sticky; top: 0;
-}}
-thead th:first-child {{ text-align: center; }}
-tbody td {{
-    padding: 8px 12px;
-    text-align: right;
-    border-bottom: 1px solid #1a2a3a;
-    color: #c0c8d0;
-}}
-tbody td:first-child {{ text-align: center; color: #7a8a9a; }}
-tbody tr:hover {{ background: #1a2f3f; }}
-td.up {{ color: #ef5350 !important; }}
-td.down {{ color: #26a69a !important; }}
-.footer {{
-    text-align: center;
-    padding: 30px;
-    color: #556677;
-    font-size: 0.82em;
-    border-top: 1px solid #1a2a3a;
-    margin-top: 20px;
-}}
-.footer a {{ color: #c9a84c; text-decoration: none; }}
-.section-title {{
-    color: #c9a84c;
-    font-size: 1.3em;
-    margin: 32px 0 16px 0;
-    padding-left: 12px;
-    border-left: 4px solid #c9a84c;
-}}
-.analysis-text {{
-    background: #152230;
-    border: 1px solid #1e3040;
-    border-radius: 10px;
-    padding: 24px;
-    margin-bottom: 24px;
-    line-height: 1.9;
-    font-size: 0.93em;
-    color: #bcc8d4;
-}}
-.analysis-text h3 {{ color: #c9a84c; margin: 16px 0 8px 0; font-size: 1.05em; }}
-.analysis-text h3:first-child {{ margin-top: 0; }}
-.analysis-text p {{ margin-bottom: 12px; text-indent: 2em; }}
-.analysis-text ul {{ margin: 8px 0 8px 2em; }}
-.analysis-text li {{ margin-bottom: 6px; }}
+*{{margin:0;padding:0;box-sizing:border-box}}
+body{{font-family:"SimSun","宋体","Microsoft YaHei",serif;background:#f5f5f5;color:#333;line-height:1.8}}
+.container{{max-width:1200px;margin:0 auto;padding:20px}}
+header{{background:linear-gradient(135deg,#0d47a1,#1565c0);color:#fff;padding:40px 20px;text-align:center;border-radius:8px;margin-bottom:30px}}
+header h1{{font-size:30px;margin-bottom:8px}}
+header p{{font-size:15px;opacity:.9}}
+.section{{background:#fff;border-radius:8px;padding:25px;margin-bottom:25px;box-shadow:0 2px 8px rgba(0,0,0,.08)}}
+.section h2{{font-size:22px;color:#0d47a1;border-left:5px solid #0d47a1;padding-left:15px;margin-bottom:20px}}
+.section h3{{font-size:18px;color:#1565c0;margin:20px 0 15px}}
+.stats-grid{{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:15px;margin-bottom:20px}}
+.stat-card{{background:#f8f9fa;border-radius:8px;padding:18px;text-align:center;border:1px solid #e0e0e0}}
+.stat-card .value{{font-size:24px;font-weight:bold;color:#0d47a1;margin:6px 0}}
+.stat-card .label{{font-size:13px;color:#666}}
+.up{{color:#e53935}}.down{{color:#43a047}}
+.chart-container{{width:100%;height:500px;margin:20px 0;border:1px solid #e0e0e0;border-radius:4px}}
+.chart-tall{{height:600px}}
+.analysis-text{{background:#fafafa;border-left:4px solid #0d47a1;padding:15px 20px;margin:15px 0;font-size:15px;color:#444}}
+.analysis-text strong{{color:#0d47a1}}
+.tag{{display:inline-block;background:#e3f2fd;color:#0d47a1;padding:4px 12px;border-radius:4px;font-size:13px;margin:4px}}
+.intro-grid{{display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:20px;margin:20px 0}}
+.intro-card{{background:#f8f9fa;border-radius:8px;padding:20px}}
+.intro-card h4{{color:#0d47a1;margin-bottom:10px;font-size:16px}}
+.conclusion-box{{background:#e3f2fd;border-radius:8px;padding:20px;margin:15px 0}}
+.risk-box{{background:#ffebee;border-radius:8px;padding:20px;margin:15px 0;border:1px solid #ffcdd2}}
+.code-block{{background:#263238;color:#aed581;padding:20px;border-radius:8px;overflow-x:auto;font-family:Consolas,monospace;font-size:13px;line-height:1.6;white-space:pre-wrap;max-height:500px;overflow-y:auto}}
+table{{width:100%;border-collapse:collapse;margin:15px 0;font-size:13px}}
+th,td{{border:1px solid #ddd;padding:8px;text-align:center}}
+th{{background:#0d47a1;color:#fff}}
+tr:nth-child(even){{background:#f8f9fa}}
+td.up{{color:#e53935;font-weight:bold}}td.down{{color:#43a047;font-weight:bold}}
+.footer{{text-align:center;padding:30px;color:#999;font-size:13px}}
+@media(max-width:768px){{.stats-grid,.intro-grid{{grid-template-columns:1fr}}}}
 </style>
 </head>
 <body>
-
-<div class="header">
-    <h1>{STOCK_NAME} ({STOCK_CODE}) 量化分析看板</h1>
-    <div class="subtitle">
-        数据范围: {stats['start_date']} ~ {stats['end_date']} |
-        交易日: {stats['trading_days']} 天 |
-        数据来源: Baostock / Tushare |
-        作者: {AUTHOR_NAME}
-    </div>
-</div>
-
-<div class="stats-row">
-    <div class="stat-card">
-        <div class="label">区间起始价</div>
-        <div class="value neutral">¥{stats['first_close']}</div>
-    </div>
-    <div class="stat-card">
-        <div class="label">区间期末价</div>
-        <div class="value neutral">¥{stats['last_close']}</div>
-    </div>
-    <div class="stat-card">
-        <div class="label">区间涨跌幅</div>
-        <div class="value {'up' if float(stats['change_pct']) > 0 else 'down'}">{stats['change_pct']}%</div>
-    </div>
-    <div class="stat-card">
-        <div class="label">最高价</div>
-        <div class="value up">¥{stats['high_max']}</div>
-    </div>
-    <div class="stat-card">
-        <div class="label">最低价</div>
-        <div class="value down">¥{stats['low_min']}</div>
-    </div>
-    <div class="stat-card">
-        <div class="label">日均成交量</div>
-        <div class="value neutral">{int(float(stats['avg_volume'])):,}手</div>
-    </div>
-    <div class="stat-card">
-        <div class="label">波动率(std)</div>
-        <div class="value neutral">{stats['volatility']}%</div>
-    </div>
-</div>
-
 <div class="container">
+<header>
+<h1>{STOCK_NAME}（{STOCK_CODE}.SZ）量化研究报告</h1>
+<p>ECharts交互版 · 数据驱动决策 · 技术面综合分析</p>
+<p>报告日期：2026年7月4日 | 数据区间：{stats['start_date']} — {stats['end_date']}（{stats['trading_days']}个交易日）</p>
+</header>
 
-<div class="chart-box">
-    <h2>图1: {STOCK_NAME}({STOCK_CODE}) K线图 (Candlestick Chart)</h2>
-    <div id="chart-kline" style="height:520px;"></div>
+<div class="section"><h2>一、数据概览</h2>
+<div class="stats-grid">
+<div class="stat-card"><div class="label">最新收盘价</div><div class="value">{stats['latest']}元</div></div>
+<div class="stat-card"><div class="label">5年累计涨幅</div><div class="value {'up' if stats['change_pct'].startswith('+') else 'down'}">{stats['change_pct']}%</div></div>
+<div class="stat-card"><div class="label">5年最高价</div><div class="value">{stats['high']}元</div></div>
+<div class="stat-card"><div class="label">5年最低价</div><div class="value">{stats['low']}元</div></div>
+<div class="stat-card"><div class="label">5年均价</div><div class="value">{stats['avg']}元</div></div>
+<div class="stat-card"><div class="label">日均成交量</div><div class="value">{stats['avg_vol']}手</div></div>
+<div class="stat-card"><div class="label">近60日波动率</div><div class="value">{stats['volatility']}%</div></div>
+</div></div>
+
+<div class="section"><h2>二、量化交易优势</h2>
+<div class="intro-grid">
+<div class="intro-card"><h4>数据驱动决策</h4><p>量化交易以海量历史数据为基础，通过数学模型和统计方法发现市场规律，避免人为情绪干扰。</p></div>
+<div class="intro-card"><h4>高效执行策略</h4><p>计算机程序可在毫秒级完成交易决策与执行，抓住转瞬即逝的套利机会。</p></div>
+<div class="intro-card"><h4>系统性风控</h4><p>量化模型内置严格的风险管理规则，包括止损止盈、仓位控制等。</p></div>
+<div class="intro-card"><h4>可回测验证</h4><p>任何策略均可通过历史数据进行回测验证，评估其收益风险特征。</p></div>
+</div></div>
+
+<div class="section"><h2>三、基本概念</h2>
+<div class="intro-grid">
+<div class="intro-card"><h4>K线图（Candlestick）</h4><p>每根K线包含开盘价、最高价、最低价、收盘价四个价格信息。阳线（红色）表示收盘价高于开盘价，阴线（绿色）反之。</p></div>
+<div class="intro-card"><h4>移动平均线（MA）</h4><p>MA5/MA10反映短期趋势，MA60反映中期趋势，MA250反映长期趋势。短期均线上穿长期均线为"金叉"买入信号。</p></div>
+<div class="intro-card"><h4>MACD指标</h4><p>MACD由DIF线、DEA线和MACD柱组成。DIF上穿DEA为金叉信号，MACD柱由负转正为买入信号。</p></div>
+<div class="intro-card"><h4>RSI相对强弱指标</h4><p>RSI>80超买区可能回调，RSI<20超卖区可能反弹。RSI的顶背离是重要的见顶信号。</p></div>
+<div class="intro-card"><h4>KDJ随机指标</h4><p>K上穿D为金叉买入信号，K下穿D为死叉卖出信号。J线波动最大，超过100预示极强。</p></div>
+<div class="intro-card"><h4>基本面核心指标</h4><p>ROE衡量股东回报效率；毛利率反映产品定价权；EPS是每股收益；营收增速反映成长性。</p></div>
+</div></div>
+
+<div class="section"><h2>四、公司概况</h2>
+<p><strong>{STOCK_NAME}</strong>（{STOCK_CODE}.SZ）是深交所上市的国产工业机器人及智能制造龙头企业。公司主营业务涵盖工业机器人、运动控制系统、伺服系统及系统集成解决方案，是国内为数不多实现"核心部件+机器人本体+系统集成"全产业链覆盖的企业。</p>
+<p style="margin-top:15px;"><strong>核心业务板块：</strong></p>
+<p><span class="tag">工业机器人</span><span class="tag">伺服系统</span><span class="tag">运动控制</span><span class="tag">焊接机器人</span><span class="tag">折弯机器人</span><span class="tag">系统集成</span></p>
+<p style="margin-top:15px;"><strong>投资亮点：</strong>受益于国产替代加速与智能制造政策推动，公司工业机器人出货量持续增长；核心零部件自研自产能力强，毛利率高于行业平均。但同时也面临行业竞争加剧、下游周期性波动等风险因素。</p>
 </div>
 
-<div class="two-col">
-<div class="chart-box">
-    <h2>图2: 每日收盘价 + 移动均线</h2>
-    <div id="chart-close" style="height:400px;"></div>
-</div>
-<div class="chart-box">
-    <h2>图3: 每日成交量分布</h2>
-    <div id="chart-volume" style="height:400px;"></div>
-</div>
-</div>
+<div class="section"><h2>五、技术面分析</h2>
 
-<div class="section-title">量化交易分析报告</div>
-<div class="analysis-text">
-    <h3>一、量化交易相较于传统手工操作交易的优势</h3>
-    <p>量化交易（Quantitative Trading）是指利用数学模型、统计方法和计算机程序，对金融市场数据进行系统化分析，并据此做出交易决策的一种交易方式。相较于传统的手工操作交易方法，量化交易具有以下显著优势：</p>
-    <ul>
-        <li><b>系统性与纪律性</b>：量化交易基于预先设定的规则进行决策，避免了人类情绪（如恐惧、贪婪）对交易判断的干扰。传统手工交易中，交易者常常因市场短期波动而做出非理性决策。</li>
-        <li><b>高效性与实时性</b>：计算机程序可在毫秒级别处理海量市场数据，同时监控数百只甚至数千只股票。传统交易受限于人类信息处理速度。</li>
-        <li><b>可回测性与可验证性</b>：量化策略可利用历史数据进行回测（Backtesting），在投入真实资金前评估策略的历史表现和风险收益特征。</li>
-        <li><b>风险管理的精细化</b>：可对投资组合进行精确的风险度量（VaR、最大回撤、夏普比率等），并通过程序化方式设置止损和仓位管理。</li>
-        <li><b>分散化与规模效应</b>：量化系统可同时管理多个策略、品种和市场，实现真正意义上的分散化投资。</li>
-        <li><b>可复制性与可扩展性</b>：成熟的量化策略可在不同市场、不同时间框架下复制和扩展。</li>
-    </ul>
+<h3>图1：5年日K线 + 移动平均线（MA5/10/20/60/120/250）+ 成交量</h3>
+<div id="chart1" class="chart-container chart-tall"></div>
+<div class="analysis-text"><strong>图表解读：</strong>上图展示了{STOCK_NAME}近5年的日K线走势与均线系统。均线系统中MA5/MA10代表短期趋势，MA60代表中期趋势，MA250代表长期趋势。投资者可通过底部dataZoom拖动条选择特定时间区间进行细部观察。成交量在关键突破点位明显放大，表明资金关注度提升。</div>
 
-    <h3>二、基本概念解释</h3>
-    <p><b>K线（Candlestick）</b>：K线又称蜡烛图，起源于18世纪日本的米市交易。每根K线包含四个核心价格信息：开盘价、收盘价、最高价和最低价（OHLC）。K线由实体和影线组成——开盘价与收盘价之间的矩形为实体，实体上下方的细线为上/下影线。收盘价高于开盘价为阳线（通常红色），反之为阴线（通常绿色）。K线是技术分析最重要的基础数据之一。</p>
-    <p><b>基本面（Fundamentals）</b>：基本面分析通过评估宏观经济、行业和公司财务等影响内在价值的因素，来判断资产是否被高估或低估。在量化交易中，基本面分析体现为因子投资——将各项指标量化为可计算的因子，构建多因子选股模型。</p>
-    <p><b>技术面（Technicals）</b>：技术分析通过研究历史价格和成交量数据来预测未来走势，建立在三大假设之上：市场行为包容消化一切信息、价格以趋势方式演变、历史会重演。技术分析包括趋势分析、形态分析、技术指标分析和成交量分析四大类方法。</p>
-    <p>基本面与技术面并非相互排斥而是相辅相成。实际操作中常采用「基本面选股 + 技术面择时」的复合策略框架。</p>
+<h3>图2：近2年日K线 + MACD指标</h3>
+<div id="chart2" class="chart-container chart-tall"></div>
+<div class="analysis-text"><strong>图表解读：</strong>MACD是判断趋势转折与动能强弱的核心指标。当前需密切关注MACD柱是否由正转负——若出现零轴下方死叉，则需警惕阶段性调整风险；若DIF与DEA均位于零轴上方且MACD柱重新放大，则上涨趋势有望延续。</div>
 
-    <h3>三、{STOCK_NAME}({STOCK_CODE}) 走势分析</h3>
-    <p>从上方K线图和收盘价走势图中可以看出，{STOCK_NAME}在过去一年（{stats['start_date']} 至 {stats['end_date']}）经历了明显的价格波动。区间起始价为 ¥{stats['first_close']}，期末价为 ¥{stats['last_close']}，区间涨跌幅为 {stats['change_pct']}%。</p>
-    <p>移动平均线（MA5/MA10/MA20/MA60）的相对位置关系反映了不同时间维度下的趋势变化。当短期均线上穿长期均线时形成「金叉」看涨信号，反之形成「死叉」看跌信号。成交量在关键价位附近的放大或萎缩，也提供了市场情绪的辅助判断依据。</p>
-    <p style="color:#8899aa; margin-top:16px;"><b>数据说明：</b>本报告使用前复权数据，已对股息、送股等因素进行调整，使历史价格具有可比性。复权处理是量化数据清洗的重要步骤——未复权的数据可能因除权除息导致价格跳空，进而使策略回测结果失真。实盘交易中还应注意回测过拟合、未来函数、滑点成本等问题，回测优异的表现不一定能完全在实盘中复现。</p>
+<h3>图3：近2年日K线 + RSI相对强弱指标</h3>
+<div id="chart3" class="chart-container chart-tall"></div>
+<div class="analysis-text"><strong>图表解读：</strong>RSI是衡量价格动量的振荡指标。在上涨过程中RSI多次触及80超买线提示短期超买风险。RSI在50上方运行表明市场处于相对强势状态。RSI低于20往往是有效反弹信号。RSI的背离现象（价格新高但RSI未新高）是判断顶部的重要信号。</div>
+
+<h3>图4：近2年日K线 + KDJ随机指标</h3>
+<div id="chart4" class="chart-container chart-tall"></div>
+<div class="analysis-text"><strong>图表解读：</strong>KDJ指标对价格变化极为敏感。在强势上涨市场中KDJ可能持续在80上方运行呈现"高位钝化"特征。对于趋势投资者，KDJ的高位钝化不必恐慌，但需配合成交量与MACD综合判断。J线若超过100或低于0分别预示极强或极弱状态。</div>
+
+<h3>图5：5年收盘价走势（含布林带BOLL）</h3>
+<div id="chart5" class="chart-container chart-tall"></div>
+<div class="analysis-text"><strong>图表解读：</strong>布林带（BOLL）由中轨（20日均线）、上轨和下轨组成。股价触及上轨时短期超买可能回调，触及下轨时超卖可能反弹。布林带收窄通常预示变盘窗口临近，布林带扩张则表明趋势行情启动。</div>
 </div>
 
-<div class="chart-box">
-    <h2>交易数据一览（最近20个交易日）</h2>
-    <div class="table-wrapper">
-        <table id="data-table">
-            <thead><tr>
-                <th>日期</th><th>开盘价</th><th>最高价</th><th>最低价</th>
-                <th>收盘价</th><th>涨跌幅</th><th>成交量(手)</th>
-            </tr></thead>
-            <tbody></tbody>
-        </table>
-    </div>
+<div class="section"><h2>六、技术面综合研判</h2>
+<div class="conclusion-box">
+<h4>技术面评分：中性偏积极</h4>
+<p>综合MA均线系统、MACD趋势指标、RSI动量指标和KDJ随机指标的多维度分析：</p>
+<p style="margin-top:12px;"><strong>积极因素：</strong>（1）中长期均线趋势向好，整体处于上升通道中；（2）MACD指标在多个关键节点给出金叉信号；（3）成交量在上涨波段中配合放大，验证上涨有效性。</p>
+<p style="margin-top:8px;"><strong>需关注因素：</strong>（1）短期RSI和KDJ可能进入超买区域；（2）股价距离中期均线较远时有均值回归倾向；（3）布林带开口扩大后可能出现阶段性收敛。</p>
+</div></div>
+
+<div class="section"><h2>七、投资建议</h2>
+<p><strong>短期（1-3个月）：</strong>关注技术指标超买/超卖信号，RSI>80或KDJ高位死叉时考虑适当减仓；回调至MA60附近且RSI<30时是较好的加仓时机。</p>
+<p style="margin-top:12px;"><strong>中期（3-12个月）：</strong>若MACD维持零轴上方运行且均线多头排列不变可保持多头仓位；关注MA60趋势方向，若MA60拐头向下则应降低仓位。</p>
+<p style="margin-top:12px;"><strong>长期（1年以上）：</strong>{STOCK_NAME}作为国产工业机器人龙头，受益于智能制造国策和国产替代大趋势，长期成长逻辑清晰。</p>
 </div>
 
+<div class="section"><h2>八、风险提示</h2>
+<div class="risk-box"><h4 style="color:#c62828">重要风险因素</h4>
+<p><strong>1. 行业竞争风险：</strong>工业机器人行业竞争加剧，国内外品牌价格战可能压缩毛利率。</p>
+<p><strong>2. 周期风险：</strong>下游制造业投资具有较强周期性，经济下行将导致机器人需求大幅波动。</p>
+<p><strong>3. 技术迭代风险：</strong>若公司在AI、协作机器人等新兴方向布局不足，可能丧失竞争优势。</p>
+<p><strong>4. 政策风险：</strong>智能制造补贴政策变化可能影响行业景气度。</p>
+<p><strong>5. 估值风险：</strong>若未来业绩增速不及预期，高估值面临下杀压力。</p>
+<p><strong>6. 数据风险：</strong>本报告基于历史数据，不构成投资建议。过往业绩不代表未来表现。</p>
+</div></div>
+
+<div class="section"><h2>九、Python量化分析核心代码</h2>
+<p>以下为本报告数据获取与技术指标计算的核心Python代码：</p>
+<div class="code-block"># -*- coding: utf-8 -*-
+"""量化数据引擎 — 埃斯顿(002747.SZ)"""
+import baostock as bs
+import pandas as pd, numpy as np
+
+# 1. 获取5年日线数据(前复权)
+lg = bs.login()
+rs = bs.query_history_k_data_plus("sz.002747",
+    "date,open,high,low,close,preclose,volume,amount,turn,pctChg",
+    start_date="2021-07-01", end_date="2026-07-04",
+    frequency="d", adjustflag="2")
+data = []; [data.append(rs.get_row_data()) for _ in iter(lambda: rs.next(), False)]
+df = pd.DataFrame(data, columns=rs.fields); bs.logout()
+for c in ["open","high","low","close","volume","amount"]:
+    df[c] = pd.to_numeric(df[c], errors="coerce")
+
+# 2. MACD(12,26,9)
+e12 = df["close"].ewm(span=12, adjust=False).mean()
+e26 = df["close"].ewm(span=26, adjust=False).mean()
+df["macd_dif"] = e12 - e26
+df["macd_dea"] = df["macd_dif"].ewm(span=9, adjust=False).mean()
+df["macd_bar"] = 2 * (df["macd_dif"] - df["macd_dea"])
+
+# 3. RSI(6,12,24)
+for p in [6,12,24]:
+    d = df["close"].diff(); g = d.clip(lower=0); l = (-d).clip(lower=0)
+    rs = g.ewm(alpha=1/p, adjust=False).mean() / l.ewm(alpha=1/p, adjust=False).mean()
+    df[f"rsi{{p}}"] = 100 - 100/(1+rs)
+
+# 4. KDJ(9,3,3)
+n=9; ln=df["low"].rolling(n).min(); hn=df["high"].rolling(n).max()
+rsv=(df["close"]-ln)/(hn-ln+1e-10)*100
+k_vals,d_vals=[],[]; kp=dp=50.0
+for r in rsv:
+    if np.isnan(r): k_vals.append(np.nan); d_vals.append(np.nan)
+    else: k=2/3*kp+1/3*r; d=2/3*dp+1/3*k; k_vals.append(k); d_vals.append(d); kp,dp=k,d
+df["kdj_k"]=k_vals; df["kdj_d"]=d_vals
+df["kdj_j"]=[3*k-2*d for k,d in zip(k_vals,d_vals)]
+
+# 5. BOLL(20,2)
+df["boll_mid"]=df["close"].rolling(20).mean()
+s=df["close"].rolling(20).std()
+df["boll_up"]=df["boll_mid"]+2*s; df["boll_dn"]=df["boll_mid"]-2*s
+
+df.to_csv("002747_daily.csv",index=False,encoding="utf-8-sig")</div>
+<p style="margin-top:15px;color:#666;font-size:13px;">代码说明：基于Baostock接口获取A股日线数据（前复权），计算MACD、RSI、KDJ、BOLL等经典技术指标。ECharts交互版HTML使用相同数据，通过JavaScript在前端实现dataZoom缩放、tooltip悬浮提示等交互功能。</p>
 </div>
 
-<div class="footer">
-    <p>量化交易工作坊 TASK1 | 数据引擎: Python (Baostock/Tushare) | 图表: Plotly.js</p>
-    <p>部署于 <a href="https://pages.github.com" target="_blank">GitHub Pages</a> | &copy; 2026 {AUTHOR_NAME}</p>
+<div class="section"><h2>十、近期交易数据一览（近30个交易日）</h2>
+<div style="overflow-x:auto"><table>
+<thead><tr><th>日期</th><th>开盘价</th><th>最高价</th><th>最低价</th><th>收盘价</th><th>涨跌幅</th><th>成交量(手)</th></tr></thead>
+<tbody>{table_rows}</tbody>
+</table></div></div>
+
+<div class="footer"><p>&copy; 2026 量化研究报告 | 数据来源 Baostock / Tushare Pro | 作者：{AUTHOR}</p>
+<p>风险提示：股市有风险，投资需谨慎。本报告仅供参考，不构成投资建议。</p></div>
 </div>
 
 <script>
-// ===== 图1: K线图 (Candlestick) =====
-Plotly.newPlot('chart-kline', [{{
-    type: 'candlestick',
-    x: {candlestick_json}.map(d => d.x),
-    open: {candlestick_json}.map(d => d.open),
-    high: {candlestick_json}.map(d => d.high),
-    low: {candlestick_json}.map(d => d.low),
-    close: {candlestick_json}.map(d => d.close),
-    increasing: {{ line: {{ color: '#ef5350', width: 1 }}, fillcolor: '#ef5350' }},
-    decreasing: {{ line: {{ color: '#26a69a', width: 1 }}, fillcolor: '#26a69a' }},
-    name: 'K线'
-}}], {{
-    plot_bgcolor: '#152230',
-    paper_bgcolor: '#152230',
-    font: {{ color: '#8899aa', size: 12 }},
-    xaxis: {{
-        type: 'date',
-        gridcolor: '#1e3040',
-        linecolor: '#2a4050',
-        rangeslider: {{ visible: false }},
-        rangeselector: {{
-            buttons: [
-                {{ count: 1, label: '1月', step: 'month', stepmode: 'backward' }},
-                {{ count: 3, label: '3月', step: 'month', stepmode: 'backward' }},
-                {{ count: 6, label: '6月', step: 'month', stepmode: 'backward' }},
-                {{ step: 'all', label: '全部' }}
-            ],
-            bgcolor: '#1a2f3f',
-            activecolor: '#c9a84c',
-            font: {{ color: '#c0c8d0' }}
-        }}
-    }},
-    yaxis: {{
-        title: '价格 (元)',
-        gridcolor: '#1e3040',
-        linecolor: '#2a4050',
-        side: 'right'
-    }},
-    margin: {{ l: 60, r: 20, t: 10, b: 60 }},
-    showlegend: false,
-    config: {{ displayModeBar: true, displaylogo: false, modeBarButtonsToRemove: ['lasso2d', 'select2d'] }}
+{data_js}
+
+(function() {{
+var D = STOCK_DATA; // 数据
+var n = D.dates.length;
+var idx2y = D.ohlc.slice(-250*2).map(function(d){{ return d[1]; }}); // 近2年收盘
+
+// 工具函数: 取数组从 tail 往前 N 个
+function tail(arr, N) {{ return arr.slice(Math.max(0, arr.length - N)); }}
+function tailD(N) {{ return D.dates.slice(Math.max(0, n - N)); }}
+function valOr(arr, i, fallback) {{ var v = arr[i]; return (v == null || isNaN(v)) ? (fallback||0) : v; }}
+
+// ===== 图1: K线+均线+成交量 =====
+var c1 = echarts.init(document.getElementById('chart1'));
+c1.setOption({{
+    tooltip: {{ trigger: 'axis', axisPointer: {{ type: 'cross' }} }},
+    grid: [{{ left:'8%', right:'3%', top:'5%', height:'55%' }}, {{ left:'8%', right:'3%', top:'68%', height:'20%' }}],
+    xAxis: [{{ type:'category', data:D.dates, gridIndex:0, axisLabel:{{ show:false }} }},
+            {{ type:'category', data:D.dates, gridIndex:1, axisLabel:{{ rotate:30, fontSize:10 }} }}],
+    yAxis: [{{ type:'value', gridIndex:0, scale:true, splitArea:{{ show:true }}, position:'right' }},
+            {{ type:'value', gridIndex:1, scale:true, position:'right' }}],
+    series: [
+        {{ name:'K线', type:'candlestick', data:D.ohlc,
+           itemStyle:{{ color:'#e53935',color0:'#43a047',borderColor:'#e53935',borderColor0:'#43a047' }},
+           markPoint:{{ data:[{{ type:'max',name:'最高',symbolSize:50,itemStyle:{{ color:'#e53935' }}}},
+                              {{ type:'min',name:'最低',symbolSize:50,itemStyle:{{ color:'#43a047' }}}}] }} }},
+        {{ name:'MA5',  type:'line', data:D.ma5,  smooth:true, symbol:'none', lineStyle:{{ color:'#42a5f5',width:1,type:'dashed' }} }},
+        {{ name:'MA10', type:'line', data:D.ma10, smooth:true, symbol:'none', lineStyle:{{ color:'#ff9800',width:1,type:'dashed' }} }},
+        {{ name:'MA20', type:'line', data:D.ma20, smooth:true, symbol:'none', lineStyle:{{ color:'#ab47bc',width:1,type:'dashed' }} }},
+        {{ name:'MA60', type:'line', data:D.ma60, smooth:true, symbol:'none', lineStyle:{{ color:'#66bb6a',width:1,type:'dashed' }} }},
+        {{ name:'MA120',type:'line', data:D.ma120,smooth:true, symbol:'none', lineStyle:{{ color:'#ef5350',width:1.2,type:'dotted' }} }},
+        {{ name:'MA250',type:'line', data:D.ma250,smooth:true, symbol:'none', lineStyle:{{ color:'#8d6e63',width:1.2,type:'dotted' }} }},
+        {{ name:'成交量', type:'bar', xAxisIndex:1, yAxisIndex:1, data:D.volume.map(function(v,i){{
+            var o=D.ohlc[i]; return {{ value:v, itemStyle:{{ color: o[1]>=o[0] ? '#e53935' : '#43a047' }} }}; }}) }}
+    ],
+    dataZoom:[{{ type:'slider',xAxisIndex:[0,1],start:50,end:100,height:24,bottom:20 }},
+              {{ type:'inside',xAxisIndex:[0,1],start:50,end:100 }}],
+    toolbox:{{ feature:{{ saveAsImage:{{ title:'保存' }} }} }}
 }});
 
-// ===== 图2: 收盘价 + 均线 =====
-let traces = [
-    {{ x: {close_json}.map(d => d.x), y: {close_json}.map(d => d.y),
-       type: 'scatter', mode: 'lines', name: '收盘价',
-       line: {{ color: '#e0e0e0', width: 1.5 }} }},
-    {{ x: {ma5_json}.map(d => d.x), y: {ma5_json}.map(d => d.y),
-       type: 'scatter', mode: 'lines', name: 'MA5',
-       line: {{ color: '#42a5f5', width: 1, dash: 'dot' }} }},
-    {{ x: {ma10_json}.map(d => d.x), y: {ma10_json}.map(d => d.y),
-       type: 'scatter', mode: 'lines', name: 'MA10',
-       line: {{ color: '#ff9800', width: 1, dash: 'dot' }} }},
-    {{ x: {ma20_json}.map(d => d.x), y: {ma20_json}.map(d => d.y),
-       type: 'scatter', mode: 'lines', name: 'MA20',
-       line: {{ color: '#ab47bc', width: 1, dash: 'dash' }} }},
-];
-if ({ma60_json}.length > 0) {{
-    traces.push(
-        {{ x: {ma60_json}.map(d => d.x), y: {ma60_json}.map(d => d.y),
-          type: 'scatter', mode: 'lines', name: 'MA60',
-          line: {{ color: '#66bb6a', width: 1.2, dash: 'dash' }} }}
-    );
+// ===== 辅助: K线+副图 =====
+function makeSubChart(domId, subSeries, subGridTop, subName) {{
+    var chart = echarts.init(document.getElementById(domId));
+    var opt = {{
+        tooltip: {{ trigger:'axis', axisPointer:{{ type:'cross' }} }},
+        grid: [{{ left:'8%', right:'3%', top:'5%', height:'48%' }},
+               {{ left:'8%', right:'3%', top: subGridTop||'58%', height:'30%' }}],
+        xAxis: [{{ type:'category', data:D.dates, gridIndex:0, axisLabel:{{ show:false }} }},
+                {{ type:'category', data:D.dates, gridIndex:1, axisLabel:{{ rotate:30, fontSize:10 }} }}],
+        yAxis: [{{ type:'value', gridIndex:0, scale:true, position:'right' }},
+                {{ type:'value', gridIndex:1, scale:true, position:'right' }}],
+        series: [
+            {{ name:'K线', type:'candlestick', data:D.ohlc,
+               itemStyle:{{ color:'#e53935',color0:'#43a047',borderColor:'#e53935',borderColor0:'#43a047' }} }},
+            {{ name:'MA20', type:'line', data:D.ma20, smooth:true, symbol:'none',
+               lineStyle:{{ color:'#ab47bc',width:1,type:'dashed' }} }},
+            {{ name:'MA60', type:'line', data:D.ma60, smooth:true, symbol:'none',
+               lineStyle:{{ color:'#66bb6a',width:1,type:'dashed' }} }}
+        ].concat(subSeries||[]),
+        dataZoom:[{{ type:'slider',xAxisIndex:[0,1],start:60,end:100,height:24,bottom:10 }}],
+        toolbox:{{ feature:{{ saveAsImage:{{}} }} }}
+    }};
+    chart.setOption(opt);
+    return chart;
 }}
-Plotly.newPlot('chart-close', traces, {{
-    plot_bgcolor: '#152230', paper_bgcolor: '#152230',
-    font: {{ color: '#8899aa', size: 11 }},
-    xaxis: {{ gridcolor: '#1e3040', linecolor: '#2a4050' }},
-    yaxis: {{ title: '价格 (元)', gridcolor: '#1e3040', linecolor: '#2a4050', side: 'right' }},
-    margin: {{ l: 50, r: 10, t: 10, b: 40 }},
-    legend: {{ orientation: 'h', y: 1.12, font: {{ size: 10 }} }},
-    config: {{ displayModeBar: false }}
-}});
 
-// ===== 图3: 成交量 =====
-let volColors = {volume_data}.map(d => d.color);
-Plotly.newPlot('chart-volume', [{{
-    type: 'bar',
-    x: {volume_data}.map(d => d.x),
-    y: {volume_data}.map(d => d.y),
-    marker: {{ color: volColors }},
-    name: '成交量'
-}}], {{
-    plot_bgcolor: '#152230', paper_bgcolor: '#152230',
-    font: {{ color: '#8899aa', size: 11 }},
-    xaxis: {{ gridcolor: '#1e3040', linecolor: '#2a4050' }},
-    yaxis: {{ title: '成交量 (手)', gridcolor: '#1e3040', linecolor: '#2a4050', side: 'right' }},
-    margin: {{ l: 50, r: 10, t: 10, b: 40 }},
-    showlegend: false,
-    config: {{ displayModeBar: false }}
-}});
+// ===== 图2: MACD =====
+makeSubChart('chart2', [
+    {{ name:'DIF', type:'line', xAxisIndex:1, yAxisIndex:1, data:D.macd_dif,
+       symbol:'none', lineStyle:{{ color:'#e53935',width:1.5 }} }},
+    {{ name:'DEA', type:'line', xAxisIndex:1, yAxisIndex:1, data:D.macd_dea,
+       symbol:'none', lineStyle:{{ color:'#1565c0',width:1.5 }} }},
+    {{ name:'MACD柱', type:'bar', xAxisIndex:1, yAxisIndex:1, data:D.macd_bar.map(function(v){{
+       return {{ value:v, itemStyle:{{ color: v>=0 ? '#e53935' : '#43a047' }} }}; }}) }}
+], '60%', 'MACD');
 
-// ===== 数据表格 =====
-let tableData = {table_json};
-let tbody = document.querySelector('#data-table tbody');
-tableData.forEach(row => {{
-    let tr = document.createElement('tr');
-    let changeClass = row.change.startsWith('+') ? 'up' : (row.change.startsWith('-') ? 'down' : '');
-    tr.innerHTML = `
-        <td>${{row.date}}</td>
-        <td>${{row.open}}</td>
-        <td>${{row.high}}</td>
-        <td>${{row.low}}</td>
-        <td>${{row.close}}</td>
-        <td class="${{changeClass}}">${{row.change}}</td>
-        <td>${{row.volume}}</td>
-    `;
-    tbody.appendChild(tr);
+// ===== 图3: RSI =====
+makeSubChart('chart3', [
+    {{ name:'RSI6', type:'line', xAxisIndex:1, yAxisIndex:1, data:D.rsi6,
+       symbol:'none', lineStyle:{{ color:'#e53935',width:1 }} }},
+    {{ name:'RSI12', type:'line', xAxisIndex:1, yAxisIndex:1, data:D.rsi12,
+       symbol:'none', lineStyle:{{ color:'#1565c0',width:1 }} }},
+    {{ name:'RSI24', type:'line', xAxisIndex:1, yAxisIndex:1, data:D.rsi24,
+       symbol:'none', lineStyle:{{ color:'#66bb6a',width:1 }} }},
+    {{ name:'超买线(80)', type:'line', xAxisIndex:1, yAxisIndex:1,
+       data:new Array(n).fill(80), symbol:'none',
+       lineStyle:{{ color:'#e53935',width:1,type:'dashed' }},
+       markArea:{{ silent:true, data:[[{{ yAxis:80, itemStyle:{{ color:'rgba(229,57,53,0.05)' }} }},{{ yAxis:100 }}]] }} }},
+    {{ name:'超卖线(20)', type:'line', xAxisIndex:1, yAxisIndex:1,
+       data:new Array(n).fill(20), symbol:'none',
+       lineStyle:{{ color:'#43a047',width:1,type:'dashed' }},
+       markArea:{{ silent:true, data:[[{{ yAxis:0 }},{{ yAxis:20, itemStyle:{{ color:'rgba(67,160,71,0.05)' }} }}]] }} }}
+], '58%', 'RSI');
+
+// ===== 图4: KDJ =====
+makeSubChart('chart4', [
+    {{ name:'K', type:'line', xAxisIndex:1, yAxisIndex:1, data:D.kdj_k,
+       symbol:'none', lineStyle:{{ color:'#e53935',width:1.2 }} }},
+    {{ name:'D', type:'line', xAxisIndex:1, yAxisIndex:1, data:D.kdj_d,
+       symbol:'none', lineStyle:{{ color:'#1565c0',width:1.2 }} }},
+    {{ name:'J', type:'line', xAxisIndex:1, yAxisIndex:1, data:D.kdj_j,
+       symbol:'none', lineStyle:{{ color:'#ff9800',width:0.8,type:'dotted' }} }},
+    {{ name:'超买(80)', type:'line', xAxisIndex:1, yAxisIndex:1,
+       data:new Array(n).fill(80), symbol:'none',
+       lineStyle:{{ color:'#999',width:1,type:'dashed' }} }},
+    {{ name:'超卖(20)', type:'line', xAxisIndex:1, yAxisIndex:1,
+       data:new Array(n).fill(20), symbol:'none',
+       lineStyle:{{ color:'#999',width:1,type:'dashed' }} }}
+], '58%', 'KDJ');
+
+// ===== 图5: 收盘价+布林带 =====
+(function() {{
+    var c5 = echarts.init(document.getElementById('chart5'));
+    c5.setOption({{
+        tooltip: {{ trigger:'axis' }},
+        grid: {{ left:'8%', right:'3%', top:'5%', height:'80%' }},
+        xAxis: {{ type:'category', data:D.dates, axisLabel:{{ rotate:30, fontSize:10 }} }},
+        yAxis: {{ type:'value', scale:true, position:'right' }},
+        series: [
+            {{ name:'上轨', type:'line', data:D.boll_up, symbol:'none',
+               lineStyle:{{ color:'#90caf9',width:1 }},
+               areaStyle:{{ color:'rgba(144,202,249,0.06)' }} }},
+            {{ name:'中轨(MA20)', type:'line', data:D.boll_mid, symbol:'none',
+               lineStyle:{{ color:'#ff9800',width:1,type:'dashed' }} }},
+            {{ name:'下轨', type:'line', data:D.boll_dn, symbol:'none',
+               lineStyle:{{ color:'#90caf9',width:1 }},
+               areaStyle:{{ color:'rgba(255,255,255,0.8)' }} }},
+            {{ name:'收盘价', type:'line', data:D.close, symbol:'none',
+               lineStyle:{{ color:'#0d47a1',width:1.8 }} }}
+        ],
+        dataZoom:[{{ type:'slider',start:20,end:100,height:24,bottom:10 }},
+                  {{ type:'inside',start:20,end:100 }}],
+        toolbox:{{ feature:{{ saveAsImage:{{}} }} }},
+        legend:{{ data:['上轨','中轨(MA20)','下轨','收盘价'], top:5 }}
+    }});
+}})();
+
+// 响应式
+window.addEventListener('resize', function() {{
+    [c1].forEach(function(c){{ c.resize(); }});
+    ['chart2','chart3','chart4','chart5'].forEach(function(id){{
+        var inst = echarts.getInstanceByDom(document.getElementById(id));
+        if(inst) inst.resize();
+    }});
 }});
+}})();
 </script>
-
 </body>
-</html>"""
-    return html_content
+</html>'''
 
 
 def main():
     print("=" * 60)
-    print("[Start] 生成 HTML 量化分析看板...")
+    print("[Start] 生成增强版 HTML 看板 v2...")
     print("=" * 60)
 
-    # 1. 加载数据
-    print(f"\n[Data] 加载 CSV 数据: {CSV_FILE}")
-    df = load_data(CSV_FILE)
-    print(f"   已加载 {len(df)} 条记录")
+    df = load_data()
+    print(f"[Data] 已加载 {len(df)} 条记录")
 
-    # 2. 计算统计数据
-    stats = get_summary_stats(df)
-    print(f"   数据区间: {stats['start_date']} ~ {stats['end_date']}")
+    stats = get_stats(df)
     print(f"   涨跌幅: {stats['change_pct']}%")
 
-    # 3. 生成 HTML
-    print(f"\n[HTML] 生成 HTML 页面...")
-    html = generate_html(df, stats)
+    data_js = build_data_js(df)
+    table_rows = build_table_rows(df)
+    html = build_html(data_js, stats, table_rows)
 
     with open(HTML_FILE, "w", encoding="utf-8") as f:
         f.write(html)
 
-    file_size_kb = os.path.getsize(HTML_FILE) / 1024
-    print(f"[OK] HTML 看板已生成: {HTML_FILE} ({file_size_kb:.0f} KB)")
-
-    print("\n" + "=" * 60)
-    print("[Done] 输出文件:")
-    print(f"   HTML 看板: {HTML_FILE}")
-    print(f"   可直接用浏览器打开，或部署到 GitHub Pages")
+    size_kb = os.path.getsize(HTML_FILE) / 1024
+    print(f"[OK] HTML 已生成: {HTML_FILE} ({size_kb:.0f} KB)")
     print("=" * 60)
+    print("[Done] 用浏览器打开 index.html 或部署到 GitHub Pages")
 
 
 if __name__ == "__main__":
