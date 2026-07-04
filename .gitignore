@@ -1,0 +1,26 @@
+# 临时文件
+~$*.docx
+~$*.xlsx
+*.tmp
+
+# 私密配置（API Token 等）
+token.conf
+config.local
+*.secret
+
+# Python 缓存
+__pycache__/
+*.pyc
+*.pyo
+
+# 系统文件
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# IDE
+.vscode/
+.idea/
+
+# 旧的 docx（保留最终版）
+*~*.docx
