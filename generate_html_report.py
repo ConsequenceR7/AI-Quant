@@ -20,11 +20,11 @@ from datetime import datetime
 # 配置
 # ============================================================
 OUTPUT_DIR = os.path.dirname(os.path.abspath(__file__))
-CSV_FILE = os.path.join(OUTPUT_DIR, "600519_daily.csv")
+CSV_FILE = os.path.join(OUTPUT_DIR, "002747_daily.csv")
 HTML_FILE = os.path.join(OUTPUT_DIR, "index.html")
-STOCK_CODE = "600519"
-STOCK_NAME = "贵州茅台"
-AUTHOR_NAME = "姓名"  # <-- 请替换
+STOCK_CODE = "002747"
+STOCK_NAME = "埃斯顿"
+AUTHOR_NAME = "李菓"
 
 
 def load_data(csv_path):

@@ -33,9 +33,9 @@ if sys.platform == "win32":
 # 配置区
 # ============================================================
 # 股票代码（baostock 格式：sh.600519 或 sz.000001）
-STOCK_CODE_BS = "sh.600519"   # 贵州茅台
-STOCK_CODE = "600519"
-STOCK_NAME = "贵州茅台"
+STOCK_CODE_BS = "sz.002747"   # 埃斯顿
+STOCK_CODE = "002747"
+STOCK_NAME = "埃斯顿"
 
 # 输出路径
 OUTPUT_DIR = os.path.dirname(os.path.abspath(__file__))

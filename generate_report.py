@@ -20,9 +20,9 @@ import os
 # 配置区
 # ============================================================
 OUTPUT_DIR = os.path.dirname(os.path.abspath(__file__))
-STOCK_CODE = "600519"
-STOCK_NAME = "贵州茅台"
-AUTHOR_NAME = "姓名"  # <-- 请替换为你的真实姓名
+STOCK_CODE = "002747"
+STOCK_NAME = "埃斯顿"
+AUTHOR_NAME = "李菓"
 
 FONT_NAME = "SimSun"        # 宋体
 FONT_SIZE = Pt(10.5)         # 五号字
